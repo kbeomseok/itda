@@ -1,0 +1,174 @@
+# -*- coding: utf-8 -*-
+"""
+Tapo C200 천장 마운트 (3D 프린트용) - FreeCAD 매크로
+
+사용법
+  1. FreeCAD 실행 -> 매크로 -> 매크로... -> 이 파일 선택 -> 실행
+     (또는 이 파일을 FreeCAD 창으로 끌어다 놓은 뒤 매크로 실행 버튼)
+  2. 3D 모델이 새 문서에 만들어지고, 이 파일과 같은 폴더에
+     STL(슬라이서용)과 STEP(수정용) 파일이 저장됩니다.
+
+구조 (천장에서 카메라 쪽으로)
+  [천장 판]  -> 천장에 나사 3개로 고정
+  [기둥]     -> 천장에서 카메라를 띄우는 부분 (케이블 타이 구멍 포함)
+  [받침 판]  -> C200에 들어 있던 '원래 마운트 베이스'를 나사로 고정
+  카메라는 원래 베이스에 돌려서 끼우면 끝 (정품 트위스트 잠금 그대로 사용)
+
+프린트 방향: 천장 판(넓은 면)을 베드에 붙이고 그대로 출력. 서포트 불필요.
+"""
+
+import os
+
+import FreeCAD as App
+import Part
+
+# ---------------------------------------------------------------------------
+# 치수 (단위: mm) - 필요하면 여기 숫자만 바꾸고 다시 실행하세요
+# ---------------------------------------------------------------------------
+
+# 천장 판
+PLATE_DIAMETER = 90.0       # 천장 판 지름
+PLATE_THICKNESS = 6.0       # 천장 판 두께
+CEILING_SCREW_COUNT = 3     # 천장 고정 나사 개수
+CEILING_SCREW_PCD = 72.0    # 나사 구멍이 놓이는 원의 지름
+CEILING_SCREW_HOLE = 4.5    # 나사 구멍 지름 (M4 / 4mm 목나사 기준)
+CEILING_SCREW_HEAD = 9.0    # 접시머리 지름 (접시머리 나사가 평평하게 묻힘)
+
+# 기둥
+TOTAL_DROP = 60.0           # 천장 면 ~ 받침 판 윗면까지 높이 (카메라를 띄우는 거리)
+STEM_DIAMETER = 24.0        # 기둥 지름
+BASE_FILLET = 8.0           # 기둥 아래 보강(원뿔) 높이 = 폭
+TIE_SLOT_WIDTH = 5.0        # 케이블 타이 구멍 폭
+TIE_SLOT_HEIGHT = 2.5       # 케이블 타이 구멍 높이
+
+# 받침 판 (C200 정품 마운트 베이스가 올라가는 곳)
+PLATFORM_DIAMETER = 58.0    # 정품 베이스(약 55mm)보다 조금 크게
+PLATFORM_THICKNESS = 4.0    # 받침 판 두께 (아래 45도 원뿔 위에 올라감)
+BASE_SCREW_SPACING = 37.0   # 정품 베이스의 나사 구멍 두 개 사이 거리
+BASE_PILOT_HOLE = 2.5       # 나사 박을 안내 구멍 지름 (피스가 플라스틱을 파고 들어감)
+BASE_PILOT_DEPTH = 12.0     # 안내 구멍 깊이
+
+# 내보내기
+EXPORT_STL = True
+EXPORT_STEP = True
+FILE_NAME = "tapo_c200_ceiling_mount"
+
+# ---------------------------------------------------------------------------
+
+V = App.Vector
+Z = V(0, 0, 1)
+
+
+def check_parameters():
+    stem_r = STEM_DIAMETER / 2.0
+    platform_r = PLATFORM_DIAMETER / 2.0
+    cone_h = platform_r - stem_r  # 45도 원뿔이라 높이 = 반지름 차이
+    min_drop = PLATE_THICKNESS + BASE_FILLET + cone_h + PLATFORM_THICKNESS
+    if TOTAL_DROP < min_drop:
+        raise ValueError("TOTAL_DROP는 최소 %.1f mm 이상이어야 합니다." % min_drop)
+    # 천장 나사를 드라이버로 조일 공간이 받침 판에 가리지 않는지 확인
+    if CEILING_SCREW_PCD / 2.0 - CEILING_SCREW_HEAD / 2.0 < platform_r:
+        raise ValueError("받침 판이 천장 나사 구멍을 가립니다. "
+                         "CEILING_SCREW_PCD를 키우거나 PLATFORM_DIAMETER를 줄이세요.")
+    if CEILING_SCREW_PCD / 2.0 + CEILING_SCREW_HEAD / 2.0 > PLATE_DIAMETER / 2.0 - 2.0:
+        raise ValueError("천장 나사 구멍이 판 가장자리에 너무 가깝습니다.")
+    if BASE_SCREW_SPACING / 2.0 + BASE_PILOT_HOLE > platform_r:
+        raise ValueError("BASE_SCREW_SPACING이 받침 판보다 큽니다.")
+    return cone_h
+
+
+def build():
+    cone_h = check_parameters()
+    stem_r = STEM_DIAMETER / 2.0
+    platform_r = PLATFORM_DIAMETER / 2.0
+    platform_top = TOTAL_DROP
+    platform_bottom = platform_top - PLATFORM_THICKNESS
+    cone_bottom = platform_bottom - cone_h
+
+    # 1) 천장 판
+    body = Part.makeCylinder(PLATE_DIAMETER / 2.0, PLATE_THICKNESS)
+
+    # 2) 기둥 아래 보강 원뿔 (판과 기둥 연결부 강화)
+    fillet = Part.makeCone(stem_r + BASE_FILLET, stem_r, BASE_FILLET,
+                           V(0, 0, PLATE_THICKNESS), Z)
+    body = body.fuse(fillet)
+
+    # 3) 기둥
+    stem = Part.makeCylinder(stem_r, cone_bottom - PLATE_THICKNESS + 0.01,
+                             V(0, 0, PLATE_THICKNESS), Z)
+    body = body.fuse(stem)
+
+    # 4) 받침 판 아래 45도 원뿔 (서포트 없이 프린트 가능)
+    cone = Part.makeCone(stem_r, platform_r, cone_h, V(0, 0, cone_bottom), Z)
+    body = body.fuse(cone)
+
+    # 5) 받침 판
+    platform = Part.makeCylinder(platform_r, PLATFORM_THICKNESS,
+                                 V(0, 0, platform_bottom), Z)
+    body = body.fuse(platform)
+
+    # 6) 천장 고정용 접시머리 나사 구멍
+    import math
+    sink_depth = (CEILING_SCREW_HEAD - CEILING_SCREW_HOLE) / 2.0  # 90도 접시
+    for i in range(CEILING_SCREW_COUNT):
+        a = 2.0 * math.pi * i / CEILING_SCREW_COUNT + math.pi / 2.0
+        x = CEILING_SCREW_PCD / 2.0 * math.cos(a)
+        y = CEILING_SCREW_PCD / 2.0 * math.sin(a)
+        hole = Part.makeCylinder(CEILING_SCREW_HOLE / 2.0, PLATE_THICKNESS + 2.0,
+                                 V(x, y, -1.0), Z)
+        sink = Part.makeCone(CEILING_SCREW_HOLE / 2.0, CEILING_SCREW_HEAD / 2.0 + 0.5,
+                             sink_depth + 0.5, V(x, y, PLATE_THICKNESS - sink_depth), Z)
+        body = body.cut(hole).cut(sink)
+
+    # 7) 정품 마운트 베이스 고정용 안내 구멍 2개
+    for x in (-BASE_SCREW_SPACING / 2.0, BASE_SCREW_SPACING / 2.0):
+        pilot = Part.makeCylinder(BASE_PILOT_HOLE / 2.0, BASE_PILOT_DEPTH + 1.0,
+                                  V(x, 0, platform_top - BASE_PILOT_DEPTH), Z)
+        body = body.cut(pilot)
+
+    # 8) 케이블 타이 구멍 (기둥을 가로로 관통) - 전원 케이블을 기둥에 묶기
+    slot_z = (PLATE_THICKNESS + BASE_FILLET + cone_bottom) / 2.0
+    slot = Part.makeBox(STEM_DIAMETER + 20.0, TIE_SLOT_WIDTH, TIE_SLOT_HEIGHT,
+                        V(-(STEM_DIAMETER + 20.0) / 2.0, -TIE_SLOT_WIDTH / 2.0,
+                          slot_z - TIE_SLOT_HEIGHT / 2.0))
+    body = body.cut(slot)
+
+    return body.removeSplitter()
+
+
+def output_dir():
+    try:
+        d = os.path.dirname(os.path.abspath(__file__))
+        if os.path.isdir(d):
+            return d
+    except NameError:
+        pass
+    return os.path.expanduser("~")
+
+
+def main():
+    shape = build()
+
+    doc = App.newDocument("TapoC200CeilingMount")
+    obj = doc.addObject("Part::Feature", "C200_Ceiling_Mount")
+    obj.Shape = shape
+    doc.recompute()
+
+    out = output_dir()
+    if EXPORT_STL:
+        shape.exportStl(os.path.join(out, FILE_NAME + ".stl"))
+    if EXPORT_STEP:
+        shape.exportStep(os.path.join(out, FILE_NAME + ".step"))
+
+    if getattr(App, "GuiUp", False):
+        import FreeCADGui as Gui
+        Gui.activeDocument().activeView().viewIsometric()
+        Gui.SendMsgToActiveView("ViewFit")
+
+    App.Console.PrintMessage(
+        "C200 천장 마운트 생성 완료: 부피 %.1f cm3, 높이 %.1f mm, 저장 위치 %s\n"
+        % (shape.Volume / 1000.0, shape.BoundBox.ZLength, out))
+    return shape
+
+
+main()
