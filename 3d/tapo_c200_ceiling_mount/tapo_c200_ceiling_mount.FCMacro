@@ -11,12 +11,18 @@ Tapo C200 천장 마운트 (3D 프린트용) - FreeCAD 매크로
 구조 (천장에서 카메라 쪽으로)
   [천장 판]  -> 천장에 나사 3개로 고정
   [기둥]     -> 천장에서 카메라를 띄우는 부분 (케이블 타이 구멍 포함)
-  [받침 판]  -> C200에 들어 있던 '원래 마운트 베이스'를 나사로 고정
-  카메라는 원래 베이스에 돌려서 끼우면 끝 (정품 트위스트 잠금 그대로 사용)
+  [받침 판]  -> 카메라 바닥이 닿는 면
+  [걸쇠]     -> 카메라 바닥 홈에 넣고 돌려서 잠그는 부분 (MOUNT_TYPE = "bayonet")
+               또는 정품 마운트 베이스를 나사로 고정 (MOUNT_TYPE = "original_base")
+
+걸쇠 치수는 사진으로 추정한 값입니다. 먼저 함께 저장되는
+  tapo_c200_fit_test.stl (걸쇠만 있는 얇은 시험 조각, 10분 내외 출력)
+을 뽑아서 카메라에 끼워 보고, 헐겁거나 안 들어가면 아래 '걸쇠' 숫자를 조정하세요.
 
 프린트 방향: 천장 판(넓은 면)을 베드에 붙이고 그대로 출력. 서포트 불필요.
 """
 
+import math
 import os
 
 import FreeCAD as App
@@ -41,9 +47,33 @@ BASE_FILLET = 8.0           # 기둥 아래 보강(원뿔) 높이 = 폭
 TIE_SLOT_WIDTH = 5.0        # 케이블 타이 구멍 폭
 TIE_SLOT_HEIGHT = 2.5       # 케이블 타이 구멍 높이
 
-# 받침 판 (C200 정품 마운트 베이스가 올라가는 곳)
-PLATFORM_DIAMETER = 58.0    # 정품 베이스(약 55mm)보다 조금 크게
+# 카메라 고정 방식
+#   "bayonet"       : 받침 판에 걸쇠를 만들어 카메라를 바로 돌려 끼움 (정품 베이스 불필요)
+#   "original_base" : 정품 마운트 베이스를 받침 판에 나사로 고정
+MOUNT_TYPE = "bayonet"
+
+# 받침 판
+PLATFORM_DIAMETER = 52.0    # 카메라 바닥 고무발(회색 호 모양) 안쪽에 들어가는 크기
+                            # ("original_base"일 때는 58 권장: 정품 베이스 약 55mm)
 PLATFORM_THICKNESS = 4.0    # 받침 판 두께 (아래 45도 원뿔 위에 올라감)
+
+# 걸쇠 (MOUNT_TYPE = "bayonet") - 카메라 바닥 홈 치수. 캘리퍼스로 재서 넣으세요.
+#   [A] OPENING_DIAMETER : 가운데 둥근 홈 입구 지름 (입구 2개 부분 제외, 둥근 테두리)
+#   [B] UNDERCUT_DIAMETER: 입구 2개의 바깥 끝끼리 거리 (= 테두리 안쪽으로 파인 지름)
+#   [C] NOTCH_WIDTH      : 입구 하나의 폭
+#   [D] LIP_THICKNESS    : 바닥 면 ~ 테두리 아래쪽까지 두께 (걸쇠가 걸리는 턱 두께)
+#   [E] UNDERCUT_HEIGHT  : 테두리 아래 빈 공간 높이 (홈 전체 깊이 - D)
+#   [F] CENTER_DIAMETER  : 홈 가운데 원판(작은 점 있는 부분) 지름
+OPENING_DIAMETER = 37.0     # [A] 추정값
+UNDERCUT_DIAMETER = 45.0    # [B] 추정값
+NOTCH_WIDTH = 11.0          # [C] 추정값
+LIP_THICKNESS = 2.5         # [D] 추정값
+UNDERCUT_HEIGHT = 3.0       # [E] 추정값
+CENTER_DIAMETER = 24.0      # [F] 추정값
+LUG_COUNT = 2               # 입구(걸쇠) 개수
+FIT_CLEARANCE = 0.3         # 틈새. 빡빡하면 0.4~0.5, 헐거우면 0.2로
+
+# 정품 베이스 고정용 (MOUNT_TYPE = "original_base")
 BASE_SCREW_SPACING = 37.0   # 정품 베이스의 나사 구멍 두 개 사이 거리
 BASE_PILOT_HOLE = 2.5       # 나사 박을 안내 구멍 지름 (피스가 플라스틱을 파고 들어감)
 BASE_PILOT_DEPTH = 12.0     # 안내 구멍 깊이
@@ -51,7 +81,9 @@ BASE_PILOT_DEPTH = 12.0     # 안내 구멍 깊이
 # 내보내기
 EXPORT_STL = True
 EXPORT_STEP = True
+EXPORT_FIT_TEST = True      # 걸쇠 시험 조각(tapo_c200_fit_test.stl)도 저장
 FILE_NAME = "tapo_c200_ceiling_mount"
+FIT_TEST_NAME = "tapo_c200_fit_test"
 
 # ---------------------------------------------------------------------------
 
@@ -72,9 +104,54 @@ def check_parameters():
                          "CEILING_SCREW_PCD를 키우거나 PLATFORM_DIAMETER를 줄이세요.")
     if CEILING_SCREW_PCD / 2.0 + CEILING_SCREW_HEAD / 2.0 > PLATE_DIAMETER / 2.0 - 2.0:
         raise ValueError("천장 나사 구멍이 판 가장자리에 너무 가깝습니다.")
-    if BASE_SCREW_SPACING / 2.0 + BASE_PILOT_HOLE > platform_r:
-        raise ValueError("BASE_SCREW_SPACING이 받침 판보다 큽니다.")
+    if MOUNT_TYPE == "original_base":
+        if BASE_SCREW_SPACING / 2.0 + BASE_PILOT_HOLE > platform_r:
+            raise ValueError("BASE_SCREW_SPACING이 받침 판보다 큽니다.")
+    elif MOUNT_TYPE == "bayonet":
+        if UNDERCUT_DIAMETER <= OPENING_DIAMETER:
+            raise ValueError("UNDERCUT_DIAMETER는 OPENING_DIAMETER보다 커야 합니다.")
+        if CENTER_DIAMETER + 2 * FIT_CLEARANCE + 4.0 > OPENING_DIAMETER:
+            raise ValueError("걸쇠 고리 벽이 너무 얇습니다. CENTER_DIAMETER를 확인하세요.")
+        if UNDERCUT_HEIGHT <= 2 * FIT_CLEARANCE + 1.0:
+            raise ValueError("UNDERCUT_HEIGHT가 너무 작아 걸쇠를 만들 수 없습니다.")
+        if UNDERCUT_DIAMETER / 2.0 > platform_r:
+            raise ValueError("PLATFORM_DIAMETER가 걸쇠보다 작습니다.")
+    else:
+        raise ValueError('MOUNT_TYPE은 "bayonet" 또는 "original_base" 입니다.')
     return cone_h
+
+
+def make_bayonet(z0):
+    """받침 판 윗면(z0) 위에 올라가는 걸쇠: 고리 모양 목 + 바깥으로 튀어나온 날개(LUG).
+
+    카메라 홈 입구로 날개를 넣고 -> 돌리면 날개가 테두리 밑으로 들어가 잠깁니다.
+    가운데는 비워서 카메라 홈 가운데 원판과 부딪히지 않게 합니다.
+    """
+    c = FIT_CLEARANCE
+    neck_r = OPENING_DIAMETER / 2.0 - c
+    inner_r = CENTER_DIAMETER / 2.0 + c
+    lug_out_r = UNDERCUT_DIAMETER / 2.0 - c
+    lug_z = z0 + LIP_THICKNESS + c            # 날개 아래면 = 테두리 두께 + 틈새
+    lug_t = UNDERCUT_HEIGHT - 2 * c           # 날개 두께
+    lug_w = NOTCH_WIDTH - 2 * c               # 날개 폭 (입구보다 좁게)
+    top = lug_z + lug_t
+
+    neck = Part.makeCylinder(neck_r, top - z0, V(0, 0, z0), Z)
+    for i in range(LUG_COUNT):
+        a = 360.0 * i / LUG_COUNT
+        lug = Part.makeBox(lug_out_r, lug_w, lug_t, V(0, -lug_w / 2.0, lug_z))
+        lug = lug.common(Part.makeCylinder(lug_out_r, lug_t, V(0, 0, lug_z), Z))
+        lug.rotate(V(0, 0, 0), Z, a)
+        neck = neck.fuse(lug)
+    hollow = Part.makeCylinder(inner_r, top - z0 + 1.0, V(0, 0, z0 + 0.01), Z)
+    return neck.cut(hollow)
+
+
+def build_fit_test():
+    """걸쇠 + 얇은 판만 있는 시험 조각 (치수 확인용, 빨리 뽑힘)."""
+    disk_t = 2.0
+    disk = Part.makeCylinder(PLATFORM_DIAMETER / 2.0, disk_t)
+    return disk.fuse(make_bayonet(disk_t)).removeSplitter()
 
 
 def build():
@@ -108,7 +185,6 @@ def build():
     body = body.fuse(platform)
 
     # 6) 천장 고정용 접시머리 나사 구멍
-    import math
     sink_depth = (CEILING_SCREW_HEAD - CEILING_SCREW_HOLE) / 2.0  # 90도 접시
     for i in range(CEILING_SCREW_COUNT):
         a = 2.0 * math.pi * i / CEILING_SCREW_COUNT + math.pi / 2.0
@@ -120,11 +196,15 @@ def build():
                              sink_depth + 0.5, V(x, y, PLATE_THICKNESS - sink_depth), Z)
         body = body.cut(hole).cut(sink)
 
-    # 7) 정품 마운트 베이스 고정용 안내 구멍 2개
-    for x in (-BASE_SCREW_SPACING / 2.0, BASE_SCREW_SPACING / 2.0):
-        pilot = Part.makeCylinder(BASE_PILOT_HOLE / 2.0, BASE_PILOT_DEPTH + 1.0,
-                                  V(x, 0, platform_top - BASE_PILOT_DEPTH), Z)
-        body = body.cut(pilot)
+    # 7) 카메라 고정부
+    if MOUNT_TYPE == "bayonet":
+        body = body.fuse(make_bayonet(platform_top))
+    else:
+        # 정품 마운트 베이스 고정용 안내 구멍 2개
+        for x in (-BASE_SCREW_SPACING / 2.0, BASE_SCREW_SPACING / 2.0):
+            pilot = Part.makeCylinder(BASE_PILOT_HOLE / 2.0, BASE_PILOT_DEPTH + 1.0,
+                                      V(x, 0, platform_top - BASE_PILOT_DEPTH), Z)
+            body = body.cut(pilot)
 
     # 8) 케이블 타이 구멍 (기둥을 가로로 관통) - 전원 케이블을 기둥에 묶기
     slot_z = (PLATE_THICKNESS + BASE_FILLET + cone_bottom) / 2.0
@@ -159,6 +239,8 @@ def main():
         shape.exportStl(os.path.join(out, FILE_NAME + ".stl"))
     if EXPORT_STEP:
         shape.exportStep(os.path.join(out, FILE_NAME + ".step"))
+    if EXPORT_FIT_TEST and MOUNT_TYPE == "bayonet":
+        build_fit_test().exportStl(os.path.join(out, FIT_TEST_NAME + ".stl"))
 
     if getattr(App, "GuiUp", False):
         import FreeCADGui as Gui
